@@ -157,6 +157,22 @@ The `this-command' check below is a retained safety net."
         (funcall cb nil))
       (mcp-server-emacs-tools-ask-user--dispatch-next))))
 
+(defun mcp-server-emacs-tools-ask-user--read-free-text ()
+  "Prompt the user to type a free-text answer for the current question.
+Pre-fills any previously entered custom answer as the initial input.
+An empty submission or C-g is treated as a no-op; the previous answer
+is preserved and the transient remains live."
+  (interactive)
+  (let* ((q       (mcp-server-emacs-tools-ask-user--current-question))
+         (current (mcp-server-emacs-tools-ask-user--question-selected-choice q))
+         (choices (mcp-server-emacs-tools-ask-user--question-choices q))
+         (initial (when (and current (not (member current choices))) current))
+         (answer  (condition-case nil
+                      (read-string "Your answer: " initial)
+                    (quit nil))))
+    (when (and answer (not (string= answer "")))
+      (setf (mcp-server-emacs-tools-ask-user--question-selected-choice q) answer))))
+
 (defun mcp-server-emacs-tools-ask-user--submit ()
   "Collect all answers and invoke the registered callback."
   (interactive)
@@ -195,6 +211,18 @@ The `this-command' check below is a retained safety net."
                     (mcp-server-emacs-tools-ask-user--make-choice-suffix
                      (car kv) (cdr kv) answer))
                   keyed))
+         ;; "Other..." suffix — always last in the choices group.
+         ;; Uses "!" which is outside the 1-9/a-z auto-assigned range so it
+         ;; can never collide with a predefined choice key.
+         (custom-p (and answer (not (member answer choices))))
+         (other-label (if custom-p
+                          (propertize (concat "[x] Other: " answer)
+                                      'face 'transient-value)
+                        "[ ] Other..."))
+         (other-spec
+          `("!" ,other-label
+            mcp-server-emacs-tools-ask-user--read-free-text
+            :transient t))
          (nav-specs
            (when (> count 1)
              `(("[" "Previous question" mcp-server-emacs-tools-ask-user--prev :transient t)
@@ -214,7 +242,7 @@ The `this-command' check below is a retained safety net."
      'mcp-server-emacs-tools-ask-user--transient
      (delq nil
            (list
-            (apply #'vector choices-heading choice-specs)
+            (apply #'vector choices-heading (append choice-specs (list other-spec)))
             (when nav-specs (apply #'vector "Navigation" nav-specs))
             (apply #'vector "Action" submit-specs))))))
 

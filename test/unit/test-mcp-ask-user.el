@@ -404,5 +404,89 @@ captures the callback in `mcp-test-ask-user--captured-callback'."
                                        :array-type  'array)))
         (should (equal "r1" (alist-get 'id parsed))))))))
 
+;;; --------------------------------------------------------------------------
+;;; Free-text (Other...) input
+;;; --------------------------------------------------------------------------
+
+(ert-deftest mcp-test-ask-user-read-free-text-stores-answer ()
+  "read-free-text stores entered string in selected-choice."
+  (setq mcp-server-emacs-tools-ask-user--questions
+        (list (make-mcp-server-emacs-tools-ask-user--question
+               :id "1" :title "Q1" :choices '("A" "B") :selected-choice nil))
+        mcp-server-emacs-tools-ask-user--current-index 0)
+  (mcp-test-with-mock
+   ((read-string (lambda (_prompt &optional _initial) "custom text")))
+   (mcp-server-emacs-tools-ask-user--read-free-text)
+   (should (equal "custom text"
+                  (mcp-server-emacs-tools-ask-user--question-selected-choice
+                   (car mcp-server-emacs-tools-ask-user--questions))))
+   ;; Predefined choices must be unchanged.
+   (should (equal '("A" "B")
+                  (mcp-server-emacs-tools-ask-user--question-choices
+                   (car mcp-server-emacs-tools-ask-user--questions))))))
+
+(ert-deftest mcp-test-ask-user-read-free-text-empty-is-noop ()
+  "read-free-text treats empty input as no-op; previous answer preserved."
+  (setq mcp-server-emacs-tools-ask-user--questions
+        (list (make-mcp-server-emacs-tools-ask-user--question
+               :id "1" :title "Q1" :choices '("A" "B") :selected-choice "previous"))
+        mcp-server-emacs-tools-ask-user--current-index 0)
+  (mcp-test-with-mock
+   ((read-string (lambda (_prompt &optional _initial) "")))
+   (mcp-server-emacs-tools-ask-user--read-free-text)
+   (should (equal "previous"
+                  (mcp-server-emacs-tools-ask-user--question-selected-choice
+                   (car mcp-server-emacs-tools-ask-user--questions))))))
+
+(ert-deftest mcp-test-ask-user-read-free-text-quit-is-noop ()
+  "read-free-text treats C-g (quit signal) as no-op; previous answer preserved."
+  (setq mcp-server-emacs-tools-ask-user--questions
+        (list (make-mcp-server-emacs-tools-ask-user--question
+               :id "1" :title "Q1" :choices '("A" "B") :selected-choice "previous"))
+        mcp-server-emacs-tools-ask-user--current-index 0)
+  (mcp-test-with-mock
+   ((read-string (lambda (_prompt &optional _initial) (signal 'quit nil))))
+   (mcp-server-emacs-tools-ask-user--read-free-text)
+   (should (equal "previous"
+                  (mcp-server-emacs-tools-ask-user--question-selected-choice
+                   (car mcp-server-emacs-tools-ask-user--questions))))))
+
+(defun mcp-test-ask-user--find-other-spec (layout)
+  "Return the '!' suffix spec from the choices group in LAYOUT.
+LAYOUT is the raw output of `--build-layout': a list of parsed
+intermediate vectors of the form [priority class plist children-list],
+where each child is a list (priority class plist).  EIEIO objects are
+only instantiated later by transient--init-suffixes."
+  (let* ((group    (car layout))
+         (children (aref group 3)))
+    (cl-find "!" children
+             :key (lambda (c) (plist-get (nth 2 c) :key))
+             :test #'equal)))
+
+(ert-deftest mcp-test-ask-user-build-layout-includes-other-suffix ()
+  "build-layout includes ! suffix; label reflects presence/absence of custom answer."
+  (setq mcp-server-emacs-tools-ask-user--questions
+        (list (make-mcp-server-emacs-tools-ask-user--question
+               :id "1" :title "Q1" :choices '("A" "B") :selected-choice nil))
+        mcp-server-emacs-tools-ask-user--current-index 0)
+  ;; No custom answer: ! suffix should show "[ ] Other..."
+  (let* ((layout (mcp-server-emacs-tools-ask-user--build-layout nil))
+         (other  (mcp-test-ask-user--find-other-spec layout)))
+    (should other)
+    (should (equal "[ ] Other..."
+                   (substring-no-properties
+                    (plist-get (nth 2 other) :description)))))
+  ;; Custom answer (not in predefined choices): ! suffix shows "[x] Other: ..."
+  (setf (mcp-server-emacs-tools-ask-user--question-selected-choice
+         (car mcp-server-emacs-tools-ask-user--questions))
+        "something custom")
+  (let* ((layout (mcp-server-emacs-tools-ask-user--build-layout nil))
+         (other  (mcp-test-ask-user--find-other-spec layout)))
+    (should other)
+    (should (string-prefix-p
+             "[x] Other:"
+             (substring-no-properties
+              (plist-get (nth 2 other) :description))))))
+
 (provide 'test-mcp-ask-user)
 ;;; test-mcp-ask-user.el ends here
