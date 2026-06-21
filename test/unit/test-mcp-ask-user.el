@@ -488,5 +488,134 @@ only instantiated later by transient--init-suffixes."
              (substring-no-properties
               (plist-get (nth 2 other) :description))))))
 
+;;; --------------------------------------------------------------------------
+;;; Input-mode submenu (! → sub-transient with m/b)
+;;; --------------------------------------------------------------------------
+
+(defun mcp-test-ask-user--setup-single-question ()
+  "Set up a single question with no answer for submenu tests."
+  (setq mcp-server-emacs-tools-ask-user--questions
+        (list (make-mcp-server-emacs-tools-ask-user--question
+               :id "1" :title "Q1" :choices '("A" "B") :selected-choice nil))
+        mcp-server-emacs-tools-ask-user--current-index 0))
+
+;; -- build-layout: ! command symbol --
+
+(ert-deftest mcp-test-ask-user-build-layout-other-command-is-input-mode-transient ()
+  "build-layout wires ! to --input-mode-transient, not --read-free-text."
+  (mcp-test-ask-user--setup-single-question)
+  (let* ((layout (mcp-server-emacs-tools-ask-user--build-layout nil))
+         (other  (mcp-test-ask-user--find-other-spec layout))
+         (cmd    (plist-get (nth 2 other) :command)))
+    (should (eq cmd 'mcp-server-emacs-tools-ask-user--input-mode-transient))))
+
+;; -- --read-free-text-minibuffer (renamed from --read-free-text) --
+
+(ert-deftest mcp-test-ask-user-read-free-text-minibuffer-stores-answer ()
+  "--read-free-text-minibuffer stores entered string in selected-choice."
+  (mcp-test-ask-user--setup-single-question)
+  (mcp-test-with-mock
+   ((read-string      (lambda (_p &optional _i) "typed answer"))
+    (transient-setup  (lambda (&rest _) nil)))
+   (mcp-server-emacs-tools-ask-user--read-free-text-minibuffer)
+   (should (equal "typed answer"
+                  (mcp-server-emacs-tools-ask-user--question-selected-choice
+                   (car mcp-server-emacs-tools-ask-user--questions))))))
+
+(ert-deftest mcp-test-ask-user-read-free-text-minibuffer-empty-is-noop ()
+  "--read-free-text-minibuffer treats empty input as no-op."
+  (setq mcp-server-emacs-tools-ask-user--questions
+        (list (make-mcp-server-emacs-tools-ask-user--question
+               :id "1" :title "Q1" :choices '("A" "B") :selected-choice "prev"))
+        mcp-server-emacs-tools-ask-user--current-index 0)
+  (mcp-test-with-mock
+   ((read-string      (lambda (_p &optional _i) ""))
+    (transient-setup  (lambda (&rest _) nil)))
+   (mcp-server-emacs-tools-ask-user--read-free-text-minibuffer)
+   (should (equal "prev"
+                  (mcp-server-emacs-tools-ask-user--question-selected-choice
+                   (car mcp-server-emacs-tools-ask-user--questions))))))
+
+;; -- --read-free-text-buffer --
+
+(ert-deftest mcp-test-ask-user-read-free-text-buffer-accept-stores-answer ()
+  "--read-free-text-buffer C-c C-c stores trimmed buffer content."
+  (mcp-test-ask-user--setup-single-question)
+  (let (setup-called)
+    (mcp-test-with-mock
+     ((display-buffer  (lambda (_buf &optional _action) nil))
+      (transient-setup (lambda (&rest _) (setq setup-called t))))
+     ;; Open the buffer.
+     (mcp-server-emacs-tools-ask-user--read-free-text-buffer)
+     ;; Simulate user typing in the ephemeral buffer and pressing C-c C-c.
+     (let ((buf (get-buffer (format "*ask-user: %s*" "Q1"))))
+       (should buf)
+       (with-current-buffer buf
+         (erase-buffer)
+         (insert "  long answer  ")
+         ;; Invoke accept directly.
+         (mcp-server-emacs-tools-ask-user--buffer-accept)))
+     (should setup-called)
+     (should (equal "long answer"
+                    (mcp-server-emacs-tools-ask-user--question-selected-choice
+                     (car mcp-server-emacs-tools-ask-user--questions)))))))
+
+(ert-deftest mcp-test-ask-user-read-free-text-buffer-cancel-is-noop ()
+  "--read-free-text-buffer C-c C-k leaves selected-choice unchanged."
+  (setq mcp-server-emacs-tools-ask-user--questions
+        (list (make-mcp-server-emacs-tools-ask-user--question
+               :id "1" :title "Q1" :choices '("A" "B") :selected-choice "old"))
+        mcp-server-emacs-tools-ask-user--current-index 0)
+  (let (setup-called)
+    (mcp-test-with-mock
+     ((display-buffer  (lambda (_buf &optional _action) nil))
+      (transient-setup (lambda (&rest _) (setq setup-called t))))
+     (mcp-server-emacs-tools-ask-user--read-free-text-buffer)
+     (let ((buf (get-buffer (format "*ask-user: %s*" "Q1"))))
+       (should buf)
+       (with-current-buffer buf
+         (mcp-server-emacs-tools-ask-user--buffer-cancel)))
+     (should setup-called)
+     (should (equal "old"
+                    (mcp-server-emacs-tools-ask-user--question-selected-choice
+                     (car mcp-server-emacs-tools-ask-user--questions)))))))
+
+(ert-deftest mcp-test-ask-user-read-free-text-buffer-empty-accept-is-noop ()
+  "--read-free-text-buffer C-c C-c with empty content leaves selected-choice unchanged."
+  (setq mcp-server-emacs-tools-ask-user--questions
+        (list (make-mcp-server-emacs-tools-ask-user--question
+               :id "1" :title "Q1" :choices '("A" "B") :selected-choice "keep"))
+        mcp-server-emacs-tools-ask-user--current-index 0)
+  (mcp-test-with-mock
+   ((display-buffer  (lambda (_buf &optional _action) nil))
+    (transient-setup (lambda (&rest _) nil)))
+   (mcp-server-emacs-tools-ask-user--read-free-text-buffer)
+   (let ((buf (get-buffer (format "*ask-user: %s*" "Q1"))))
+     (should buf)
+     (with-current-buffer buf
+       (erase-buffer)
+       (mcp-server-emacs-tools-ask-user--buffer-accept)))
+   (should (equal "keep"
+                  (mcp-server-emacs-tools-ask-user--question-selected-choice
+                   (car mcp-server-emacs-tools-ask-user--questions))))))
+
+(ert-deftest mcp-test-ask-user-read-free-text-buffer-prefills-custom-answer ()
+  "--read-free-text-buffer pre-fills buffer with existing custom answer."
+  (setq mcp-server-emacs-tools-ask-user--questions
+        (list (make-mcp-server-emacs-tools-ask-user--question
+               :id "1" :title "Q1" :choices '("A" "B") :selected-choice "existing custom"))
+        mcp-server-emacs-tools-ask-user--current-index 0)
+  (mcp-test-with-mock
+   ((display-buffer  (lambda (_buf &optional _action) nil))
+    (transient-setup (lambda (&rest _) nil)))
+   (mcp-server-emacs-tools-ask-user--read-free-text-buffer)
+   (let ((buf (get-buffer (format "*ask-user: %s*" "Q1"))))
+     (should buf)
+     (with-current-buffer buf
+       (should (equal "existing custom"
+                      (string-trim (buffer-string))))
+       ;; Clean up.
+       (mcp-server-emacs-tools-ask-user--buffer-cancel)))))
+
 (provide 'test-mcp-ask-user)
 ;;; test-mcp-ask-user.el ends here

@@ -157,21 +157,100 @@ The `this-command' check below is a retained safety net."
         (funcall cb nil))
       (mcp-server-emacs-tools-ask-user--dispatch-next))))
 
-(defun mcp-server-emacs-tools-ask-user--read-free-text ()
-  "Prompt the user to type a free-text answer for the current question.
+(defun mcp-server-emacs-tools-ask-user--read-free-text-minibuffer ()
+  "Prompt the user to type a short free-text answer in the minibuffer.
 Pre-fills any previously entered custom answer as the initial input.
 An empty submission or C-g is treated as a no-op; the previous answer
-is preserved and the transient remains live."
+is preserved.  Re-enters the main transient when done."
   (interactive)
   (let* ((q       (mcp-server-emacs-tools-ask-user--current-question))
          (current (mcp-server-emacs-tools-ask-user--question-selected-choice q))
          (choices (mcp-server-emacs-tools-ask-user--question-choices q))
          (initial (when (and current (not (member current choices))) current))
          (answer  (condition-case nil
-                      (read-string "Your answer: " initial)
-                    (quit nil))))
+                       (read-string "Your answer: " initial)
+                     (quit nil))))
     (when (and answer (not (string= answer "")))
-      (setf (mcp-server-emacs-tools-ask-user--question-selected-choice q) answer))))
+      (setf (mcp-server-emacs-tools-ask-user--question-selected-choice q) answer))
+    (transient-setup 'mcp-server-emacs-tools-ask-user--transient)))
+
+;; Keep the old name as an alias so existing callers are not broken.
+(defalias 'mcp-server-emacs-tools-ask-user--read-free-text
+  #'mcp-server-emacs-tools-ask-user--read-free-text-minibuffer)
+
+;;; --------------------------------------------------------------------------
+;;; Long-answer ephemeral buffer
+;;; --------------------------------------------------------------------------
+
+(define-minor-mode mcp-server-emacs-tools-ask-user--buffer-mode
+  "Minor mode for the ask-user long-answer ephemeral buffer.
+Provides C-c C-c (accept) and C-c C-k (cancel) bindings."
+  :lighter " AskUser"
+  :keymap (let ((km (make-sparse-keymap)))
+            (define-key km (kbd "C-c C-c")
+              #'mcp-server-emacs-tools-ask-user--buffer-accept)
+            (define-key km (kbd "C-c C-k")
+              #'mcp-server-emacs-tools-ask-user--buffer-cancel)
+            km))
+
+(defun mcp-server-emacs-tools-ask-user--buffer-name ()
+  "Return the buffer name for the current question's long-answer buffer."
+  (format "*ask-user: %s*"
+          (mcp-server-emacs-tools-ask-user--question-title
+           (mcp-server-emacs-tools-ask-user--current-question))))
+
+(defun mcp-server-emacs-tools-ask-user--buffer-accept ()
+  "Accept the buffer content as the answer for the current question.
+Trims whitespace; treats empty content as a no-op.
+Kills the buffer and re-enters the main transient."
+  (interactive)
+  (let* ((content (string-trim (buffer-string)))
+         (q       (mcp-server-emacs-tools-ask-user--current-question)))
+    (when (and content (not (string= content "")))
+      (setf (mcp-server-emacs-tools-ask-user--question-selected-choice q) content))
+    (kill-buffer (current-buffer))
+    (transient-setup 'mcp-server-emacs-tools-ask-user--transient)))
+
+(defun mcp-server-emacs-tools-ask-user--buffer-cancel ()
+  "Cancel long-answer editing; leave the current answer unchanged.
+Kills the buffer and re-enters the main transient."
+  (interactive)
+  (kill-buffer (current-buffer))
+  (transient-setup 'mcp-server-emacs-tools-ask-user--transient))
+
+(defun mcp-server-emacs-tools-ask-user--read-free-text-buffer ()
+  "Open an ephemeral buffer for typing a long free-text answer.
+The buffer uses `text-mode' plus `mcp-server-emacs-tools-ask-user--buffer-mode'.
+C-c C-c accepts; C-c C-k cancels.  Pre-fills any existing custom answer."
+  (interactive)
+  (let* ((q       (mcp-server-emacs-tools-ask-user--current-question))
+         (current (mcp-server-emacs-tools-ask-user--question-selected-choice q))
+         (choices (mcp-server-emacs-tools-ask-user--question-choices q))
+         (initial (when (and current (not (member current choices))) current))
+         (bufname (mcp-server-emacs-tools-ask-user--buffer-name))
+         (buf     (get-buffer-create bufname)))
+    (with-current-buffer buf
+      (text-mode)
+      (mcp-server-emacs-tools-ask-user--buffer-mode 1)
+      (setq-local header-line-format
+                  "  C-c C-c  accept    C-c C-k  cancel")
+      (erase-buffer)
+      (when initial
+        (insert initial))
+      (goto-char (point-min)))
+    (display-buffer buf)))
+
+;;; --------------------------------------------------------------------------
+;;; Input-mode sub-transient (shown when user presses !)
+;;; --------------------------------------------------------------------------
+
+(transient-define-prefix mcp-server-emacs-tools-ask-user--input-mode-transient ()
+  "Choose how to enter a free-text answer."
+  ["Other answer"
+   ("m" "Short answer (minibuffer)"
+    mcp-server-emacs-tools-ask-user--read-free-text-minibuffer)
+   ("b" "Long answer (buffer)"
+    mcp-server-emacs-tools-ask-user--read-free-text-buffer)])
 
 (defun mcp-server-emacs-tools-ask-user--submit ()
   "Collect all answers and invoke the registered callback."
@@ -220,9 +299,8 @@ is preserved and the transient remains live."
                                       'face 'transient-value)
                         "[ ] Other..."))
          (other-spec
-          `("!" ,other-label
-            mcp-server-emacs-tools-ask-user--read-free-text
-            :transient t))
+           `("!" ,other-label
+             mcp-server-emacs-tools-ask-user--input-mode-transient))
          (nav-specs
            (when (> count 1)
              `(("[" "Previous question" mcp-server-emacs-tools-ask-user--prev :transient t)
